@@ -1,0 +1,127 @@
+"""
+BandMatch パート自動割り振りロジック
+
+条件:
+- 曲(パート)ごとに必要出席率のしきい値がある(難しい曲・パートほど高い)
+- 割り振りは 希望度・出席率・学年 の重み付けスコアで決定
+- パートには定員(capacity)がある
+"""
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Member:
+    id: int
+    name: str
+    grade: int              # 学年 (1〜4)
+    attendance_rate: float   # 出席率 (0〜100)
+    part_preferences: dict   # {"1st": 5, "2nd": 3, "picc": 1} 希望度(高いほど希望)
+
+
+@dataclass
+class Part:
+    name: str                # "1st", "2nd", "picc" など
+    capacity: int            # 定員
+    min_attendance_rate: float = 0.0  # このパートに必要な最低出席率
+    assigned: list = field(default_factory=list)  # 割り当てられたMember
+
+
+# ------------------------------------------------------------
+# スコア計算
+# ------------------------------------------------------------
+# 重みはあとで調整しやすいように定数化しておく
+WEIGHT_PREFERENCE = 0.5
+WEIGHT_ATTENDANCE = 0.4
+WEIGHT_GRADE = 0.1
+
+
+def calc_score(member: Member, part: Part) -> float:
+    """希望度・出席率・学年からスコアを算出する"""
+    preference = member.part_preferences.get(part.name, 0)  # 0〜5想定
+    preference_score = preference / 5 * 100  # 0〜100に正規化
+
+    attendance_score = member.attendance_rate  # すでに0〜100
+
+    grade_score = member.grade / 4 * 100  # 上級生を少し優遇したい場合。不要なら重み0でOK
+
+    return (
+        preference_score * WEIGHT_PREFERENCE
+        + attendance_score * WEIGHT_ATTENDANCE
+        + grade_score * WEIGHT_GRADE
+    )
+
+
+# ------------------------------------------------------------
+# 割り振り本体
+# ------------------------------------------------------------
+def assign_parts(members: list[Member], parts: list[Part]) -> dict:
+    """
+    貪欲法によるパート割り振り。
+    戻り値: {part_name: [Member, ...]}
+    """
+    unassigned = list(members)
+
+    # 曲全体の難易度が高い(=しきい値が高い)パートから優先的に埋める
+    parts_sorted = sorted(parts, key=lambda p: p.min_attendance_rate, reverse=True)
+
+    for part in parts_sorted:
+        # 出席率がしきい値未満の人は候補から除外
+        candidates = [m for m in unassigned if m.attendance_rate >= part.min_attendance_rate]
+
+        # スコアが高い順に並べる
+        candidates.sort(key=lambda m: calc_score(m, part), reverse=True)
+
+        # 定員分だけ割り当てる
+        chosen = candidates[: part.capacity]
+        part.assigned = chosen
+
+        for m in chosen:
+            unassigned.remove(m)
+
+    result = {part.name: part.assigned for part in parts}
+    result["未割り当て"] = unassigned  # 定員オーバー等で漏れた人
+    return result
+
+
+# ------------------------------------------------------------
+# 出席率の計算(カレンダーの出欠データから)
+# ------------------------------------------------------------
+def calc_attendance_rate(attendance: dict, total_practice_days: int) -> float:
+    """
+    attendance: {day: status}  status は "参加"/"遅刻"/"早退"/"欠席"
+    出席扱いにするステータスは要件に応じて調整
+    """
+    if total_practice_days == 0:
+        return 0.0
+    counted_statuses = {"参加", "遅刻", "早退"}  # 欠席のみ非カウント
+    attended = sum(1 for status in attendance.values() if status in counted_statuses)
+    return round(attended / total_practice_days * 100, 1)
+
+
+# ------------------------------------------------------------
+# 動作確認用のサンプル
+# ------------------------------------------------------------
+if __name__ == "__main__":
+    members = [
+        Member(1, "山田太郎", grade=2, attendance_rate=90,
+               part_preferences={"1st": 5, "2nd": 2, "picc": 1}),
+        Member(2, "佐藤花子", grade=1, attendance_rate=75,
+               part_preferences={"1st": 3, "2nd": 5, "picc": 1}),
+        Member(3, "鈴木次郎", grade=3, attendance_rate=95,
+               part_preferences={"1st": 4, "2nd": 1, "picc": 5}),
+        Member(4, "田中美咲", grade=1, attendance_rate=60,
+               part_preferences={"1st": 2, "2nd": 4, "picc": 1}),
+    ]
+
+    parts = [
+        Part(name="1st", capacity=2, min_attendance_rate=70),
+        Part(name="2nd", capacity=1, min_attendance_rate=0),
+        Part(name="picc", capacity=1, min_attendance_rate=85),  # 難しいパートなので高め
+    ]
+
+    result = assign_parts(members, parts)
+
+    for part_name, assigned_members in result.items():
+        names = [m.name for m in assigned_members]
+        print(f"{part_name}: {names}")

@@ -1,0 +1,2 @@
+flet[all]==0.85.2
+firebase-admin
